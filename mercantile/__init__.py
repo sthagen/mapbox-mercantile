@@ -1,34 +1,87 @@
 """Web mercator XYZ tile utilities"""
 
 from collections import namedtuple
+from functools import reduce
 import math
 import sys
+import warnings
+import operator
 
 if sys.version_info < (3,):
+    warnings.warn(
+        "Python versions < 3 will not be supported by mercantile 2.0.",
+        UserWarning,
+    )
     from collections import Sequence
+
+    def lru_cache(maxsize=None):
+        """Does nothing. We do not cache for Python < 3."""
+
+        def fake_decorator(func):
+            return func
+
+        return fake_decorator
+
+
 else:
     from collections.abc import Sequence
+    from functools import lru_cache
 
 
-__version__ = '1.1.0'
+__version__ = "1.2.1"
 
 __all__ = [
-    'Bbox', 'LngLat', 'LngLatBbox', 'Tile', 'bounding_tile', 'bounds',
-    'children', 'feature', 'lnglat', 'parent', 'quadkey', 'quadkey_to_tile',
-    'simplify', 'tile', 'tiles', 'ul', 'xy_bounds']
+    "Bbox",
+    "LngLat",
+    "LngLatBbox",
+    "Tile",
+    "bounding_tile",
+    "bounds",
+    "children",
+    "feature",
+    "lnglat",
+    "neighbors",
+    "parent",
+    "quadkey",
+    "quadkey_to_tile",
+    "simplify",
+    "tile",
+    "tiles",
+    "ul",
+    "xy_bounds",
+    "minmax",
+]
 
 
-Tile = namedtuple('Tile', ['x', 'y', 'z'])
-"""An XYZ web mercator tile
-
-Attributes
-----------
-x, y, z : int
-    x and y indexes of the tile and zoom level z.
-"""
+R2D = 180 / math.pi
+RE = 6378137.0
+CE = 2 * math.pi * RE
+EPSILON = 1e-14
+LL_EPSILON = 1e-11
 
 
-LngLat = namedtuple('LngLat', ['lng', 'lat'])
+class Tile(namedtuple("Tile", ["x", "y", "z"])):
+    """An XYZ web mercator tile
+
+    Attributes
+    ----------
+    x, y, z : int
+        x and y indexes of the tile and zoom level z.
+
+    """
+
+    def __new__(cls, x, y, z):
+        """A new instance"""
+        lo, hi = minmax(z)
+        if not lo <= x <= hi or not lo <= y <= hi:
+            warnings.warn(
+                "Mercantile 2.0 will require tile x and y to be within the range (0, 2 ** zoom)",
+                FutureWarning,
+            )
+        return tuple.__new__(cls, [x, y, z])
+
+
+LngLat = namedtuple("LngLat", ["lng", "lat"])
 """A longitude and latitude pair
 
 Attributes
@@ -38,7 +91,7 @@ lng, lat : float
 """
 
 
-LngLatBbox = namedtuple('LngLatBbox', ['west', 'south', 'east', 'north'])
+LngLatBbox = namedtuple("LngLatBbox", ["west", "south", "east", "north"])
 """A geographic bounding box
 
 Attributes
@@ -48,7 +101,7 @@ west, south, east, north : float
 """
 
 
-Bbox = namedtuple('Bbox', ['left', 'bottom', 'right', 'top'])
+Bbox = namedtuple("Bbox", ["left", "bottom", "right", "top"])
 """A web mercator bounding box
 
 Attributes
@@ -82,6 +135,10 @@ class TileArgParsingError(MercantileError):
     """Raised when errors occur in parsing a function's tile arg(s)"""
 
 
+class TileError(MercantileError):
+    """Raised when a tile can't be determined"""
+
+
 def _parse_tile_arg(*args):
     """parse the *tile arg of module functions
 
@@ -104,7 +161,9 @@ def _parse_tile_arg(*args):
     if len(args) == 3:
         return Tile(*args)
     else:
-        raise TileArgParsingError("the tile argument may have 1 or 3 values. Note that zoom is a keyword-only argument")
+        raise TileArgParsingError(
+            "the tile argument may have 1 or 3 values. Note that zoom is a keyword-only argument"
+        )
 
 
 def ul(*tile):
@@ -131,9 +190,9 @@ def ul(*tile):
     """
     tile = _parse_tile_arg(*tile)
     xtile, ytile, zoom = tile
-    n = 2.0 ** zoom
-    lon_deg = xtile / n * 360.0 - 180.0
-    lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * ytile / n)))
+    Z2 = math.pow(2, zoom)
+    lon_deg = xtile / Z2 * 360.0 - 180.0
+    lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * ytile / Z2)))
     lat_deg = math.degrees(lat_rad)
     return LngLat(lon_deg, lat_deg)
 
@@ -143,19 +202,28 @@ def bounds(*tile):
 
     Parameters
     ----------
-    tile : Tile or sequence of int
-        May be be either an instance of Tile or 3 ints, X, Y, Z.
+    tile : Tile or tuple
+        May be be either an instance of Tile or 3 ints (X, Y, Z).
 
     Returns
     -------
-    LngLatBBox
+    LngLatBbox
 
     """
     tile = _parse_tile_arg(*tile)
     xtile, ytile, zoom = tile
-    a = ul(xtile, ytile, zoom)
-    b = ul(xtile + 1, ytile + 1, zoom)
-    return LngLatBbox(a[0], b[1], b[0], a[1])
+
+    Z2 = math.pow(2, zoom)
+
+    ul_lon_deg = xtile / Z2 * 360.0 - 180.0
+    ul_lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * ytile / Z2)))
+    ul_lat_deg = math.degrees(ul_lat_rad)
+
+    lr_lon_deg = (xtile + 1) / Z2 * 360.0 - 180.0
+    lr_lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * (ytile + 1) / Z2)))
+    lr_lat_deg = math.degrees(lr_lat_rad)
+
+    return LngLatBbox(ul_lon_deg, lr_lat_deg, lr_lon_deg, ul_lat_deg)
 
 
 def truncate_lnglat(lng, lat):
@@ -189,14 +257,16 @@ def xy(lng, lat, truncate=False):
     """
     if truncate:
         lng, lat = truncate_lnglat(lng, lat)
-    x = 6378137.0 * math.radians(lng)
+
+    x = RE * math.radians(lng)
+
     if lat <= -90:
-        y = float('-inf')
+        y = float("-inf")
     elif lat >= 90:
-        y = float('inf')
+        y = float("inf")
     else:
-        y = 6378137.0 * math.log(
-            math.tan((math.pi * 0.25) + (0.5 * math.radians(lat))))
+        y = RE * math.log(math.tan((math.pi * 0.25) + (0.5 * math.radians(lat))))
+
     return x, y
 
 
@@ -215,14 +285,66 @@ def lnglat(x, y, truncate=False):
     LngLat
 
     """
-    R2D = 180 / math.pi
-    A = 6378137.0
     lng, lat = (
-        x * R2D / A,
-        ((math.pi * 0.5) - 2.0 * math.atan(math.exp(-y / A))) * R2D)
+        x * R2D / RE,
+        ((math.pi * 0.5) - 2.0 * math.atan(math.exp(-y / RE))) * R2D,
+    )
     if truncate:
         lng, lat = truncate_lnglat(lng, lat)
     return LngLat(lng, lat)
+
+
+def neighbors(*tile, **kwargs):
+    """The neighbors of a tile
+
+    The neighbors function makes no guarantees regarding neighbor tile
+    ordering.
+
+    The neighbors function returns up to eight neighboring tiles, where
+    tiles will be omitted when they are not valid e.g. Tile(-1, -1, z).
+
+    Parameters
+    ----------
+    tile : Tile or sequence of int
+        May be be either an instance of Tile or 3 ints, X, Y, Z.
+
+    Returns
+    -------
+    list
+
+    Examples
+    --------
+    >>> neighbors(Tile(486, 332, 10))
+    [Tile(x=485, y=331, z=10), Tile(x=485, y=332, z=10), Tile(x=485, y=333, z=10), Tile(x=486, y=331, z=10), Tile(x=486, y=333, z=10), Tile(x=487, y=331, z=10), Tile(x=487, y=332, z=10), Tile(x=487, y=333, z=10)]
+
+    """
+    xtile, ytile, ztile = _parse_tile_arg(*tile)
+
+    tiles = []
+
+    lo, hi = minmax(ztile)
+
+    for i in [-1, 0, 1]:
+        for j in [-1, 0, 1]:
+            if i == 0 and j == 0:
+                continue
+            elif xtile + i < 0 or ytile + j < 0:
+                continue
+            elif xtile + i > hi or ytile + j > hi:
+                continue
+            tiles.append(Tile(x=xtile + i, y=ytile + j, z=ztile))
+
+    # Make sure to not generate invalid tiles for valid input
+    # https://github.com/mapbox/mercantile/issues/122
+    def valid(tile):
+        validx = 0 <= tile.x <= 2 ** tile.z - 1
+        validy = 0 <= tile.y <= 2 ** tile.z - 1
+        validz = 0 <= tile.z
+        return validx and validy and validz
+
+    tiles = [t for t in tiles if valid(t)]
+
+    return tiles
 
 
 def xy_bounds(*tile):
@@ -237,12 +359,40 @@ def xy_bounds(*tile):
     -------
     Bbox
 
+    Notes
+    -----
+    Epsilon is subtracted from the right limit and added to the bottom
+    limit.
+
     """
     tile = _parse_tile_arg(*tile)
     xtile, ytile, zoom = tile
-    left, top = xy(*ul(xtile, ytile, zoom))
-    right, bottom = xy(*ul(xtile + 1, ytile + 1, zoom))
+
+    tile_size = CE / math.pow(2, zoom)
+
+    left = xtile * tile_size - CE / 2
+    right = left + tile_size
+
+    top = CE / 2 - ytile * tile_size
+    bottom = top - tile_size
+
     return Bbox(left, bottom, right, top)
+
+
+def _xy(lng, lat, truncate=False):
+
+    if truncate:
+        lng, lat = truncate_lnglat(lng, lat)
+
+    x = lng / 360.0 + 0.5
+    sinlat = math.sin(math.radians(lat))
+
+    try:
+        y = 0.5 - 0.25 * math.log((1.0 + sinlat) / (1.0 - sinlat)) / math.pi
+    except (ValueError, ZeroDivisionError):
+        raise InvalidLatitudeError("Y can not be computed: lat={!r}".format(lat))
+    else:
+        return x, y
 
 
 def tile(lng, lat, zoom, truncate=False):
@@ -262,20 +412,27 @@ def tile(lng, lat, zoom, truncate=False):
     Tile
 
     """
-    if truncate:
-        lng, lat = truncate_lnglat(lng, lat)
-    lat = math.radians(lat)
-    n = 2.0 ** zoom
-    xtile = int(math.floor((lng + 180.0) / 360.0 * n))
+    x, y = _xy(lng, lat, truncate=truncate)
+    Z2 = math.pow(2, zoom)
 
-    try:
-        ytile = int(math.floor((1.0 - math.log(
-            math.tan(lat) + (1.0 / math.cos(lat))) / math.pi) / 2.0 * n))
-    except ValueError:
-        raise InvalidLatitudeError(
-            "Y can not be computed for latitude {} radians".format(lat))
+    if x <= 0:
+        xtile = 0
+    elif x >= 1:
+        xtile = int(Z2 - 1)
     else:
-        return Tile(xtile, ytile, zoom)
+        # To address loss of precision in round-tripping between tile
+        # and lng/lat, points within EPSILON of the right side of a tile
+        # are counted in the next tile over.
+        xtile = int(math.floor((x + EPSILON) * Z2))
+
+    if y <= 0:
+        ytile = 0
+    elif y >= 1:
+        ytile = int(Z2 - 1)
+    else:
+        ytile = int(math.floor((y + EPSILON) * Z2))
+
+    return Tile(xtile, ytile, zoom)
 
 
 def quadkey(*tile):
@@ -302,7 +459,7 @@ def quadkey(*tile):
         if ytile & mask:
             digit += 2
         qk.append(str(digit))
-    return ''.join(qk)
+    return "".join(qk)
 
 
 def quadkey_to_tile(qk):
@@ -323,20 +480,24 @@ def quadkey_to_tile(qk):
     xtile, ytile = 0, 0
     for i, digit in enumerate(reversed(qk)):
         mask = 1 << i
-        if digit == '1':
+        if digit == "1":
             xtile = xtile | mask
-        elif digit == '2':
+        elif digit == "2":
             ytile = ytile | mask
-        elif digit == '3':
+        elif digit == "3":
             xtile = xtile | mask
             ytile = ytile | mask
-        elif digit != '0':
+        elif digit != "0":
+            warnings.warn(
+                "QuadKeyError will not derive from ValueError in mercantile 2.0.",
+                DeprecationWarning,
+            )
             raise QuadKeyError("Unexpected quadkey digit: %r", digit)
     return Tile(xtile, ytile, i + 1)
 
 
 def tiles(west, south, east, north, zooms, truncate=False):
-    """Get the tiles intersecting a geographic bounding box
+    """Get the tiles overlapped by a geographic bounding box
 
     Parameters
     ----------
@@ -351,6 +512,11 @@ def tiles(west, south, east, north, zooms, truncate=False):
     ------
     Tile
 
+    Notes
+    -----
+    A small epsilon is used on the south and east parameters so that this
+    function yields exactly one tile when given the bounds of that same tile.
+
     """
     if truncate:
         west, south = truncate_lnglat(west, south)
@@ -363,7 +529,6 @@ def tiles(west, south, east, north, zooms, truncate=False):
         bboxes = [(west, south, east, north)]
 
     for w, s, e, n in bboxes:
-
         # Clamp bounding values.
         w = max(-180.0, w)
         s = max(-85.051129, s)
@@ -374,15 +539,11 @@ def tiles(west, south, east, north, zooms, truncate=False):
             zooms = [zooms]
 
         for z in zooms:
-            ll = tile(w, s, z)
-            ur = tile(e, n, z)
+            ul_tile = tile(w, n, z)
+            lr_tile = tile(e - LL_EPSILON, s + LL_EPSILON, z)
 
-            # Clamp left x and top y at 0.
-            llx = 0 if ll.x < 0 else ll.x
-            ury = 0 if ur.y < 0 else ur.y
-
-            for i in range(llx, min(ur.x + 1, 2 ** z)):
-                for j in range(ury, min(ll.y + 1, 2 ** z)):
+            for i in range(ul_tile.x, lr_tile.x + 1):
+                for j in range(ul_tile.y, lr_tile.y + 1):
                     yield Tile(i, j, z)
 
 
@@ -406,24 +567,26 @@ def parent(*tile, **kwargs):
 
     Examples
     --------
-
     >>> parent(Tile(0, 0, 2))
     Tile(x=0, y=0, z=1)
-
     >>> parent(Tile(0, 0, 2), zoom=0)
     Tile(x=0, y=0, z=0)
 
     """
     tile = _parse_tile_arg(*tile)
+    x, y, z = tile
+
+    if z == 0:
+        return None
 
     # zoom is a keyword-only argument.
     zoom = kwargs.get("zoom", None)
 
-    if zoom is not None and (tile[2] < zoom or zoom != int(zoom)):
+    if zoom is not None and (z <= zoom or zoom != int(zoom)):
         raise InvalidZoomError(
-            "zoom must be an integer and less than that of the input tile")
+            "zoom must be an integer and less than that of the input tile"
+        )
 
-    x, y, z = tile
     if x != int(x) or y != int(y) or z != int(z):
         raise ParentTileError("the parent of a non-integer tile is undefined")
 
@@ -454,19 +617,24 @@ def children(*tile, **kwargs):
     tile : Tile or sequence of int
         May be be either an instance of Tile or 3 ints, X, Y, Z.
     zoom : int, optional
-        Returns all children at zoom *zoom*, in depth-first clockwise winding order.
-        If unspecified, returns the immediate (i.e. zoom + 1) children of the tile.
+        Returns all children at zoom *zoom*, in depth-first clockwise
+        winding order.  If unspecified, returns the immediate (i.e. zoom
+        + 1) children of the tile.
 
     Returns
     -------
     list
 
+    Raises
+    ------
+    InvalidZoomError
+        If the zoom level is not an integer greater than the zoom level
+        of the input tile.
+
     Examples
     --------
-
     >>> children(Tile(0, 0, 0))
     [Tile(x=0, y=0, z=1), Tile(x=0, y=1, z=1), Tile(x=1, y=0, z=1), Tile(x=1, y=1, z=1)]
-
     >>> children(Tile(0, 0, 0), zoom=2)
     [Tile(x=0, y=0, z=2), Tile(x=0, y=1, z=2), Tile(x=0, y=2, z=2), Tile(x=0, y=3, z=2), ...]
 
@@ -480,19 +648,22 @@ def children(*tile, **kwargs):
 
     if zoom is not None and (ztile > zoom or zoom != int(zoom)):
         raise InvalidZoomError(
-            "zoom must be an integer and greater than that of the input tile")
+            "zoom must be an integer and greater than that of the input tile"
+        )
 
     target_zoom = zoom if zoom is not None else ztile + 1
 
     tiles = [tile]
+
     while tiles[0][2] < target_zoom:
         xtile, ytile, ztile = tiles.pop(0)
         tiles += [
             Tile(xtile * 2, ytile * 2, ztile + 1),
             Tile(xtile * 2 + 1, ytile * 2, ztile + 1),
             Tile(xtile * 2 + 1, ytile * 2 + 1, ztile + 1),
-            Tile(xtile * 2, ytile * 2 + 1, ztile + 1)
+            Tile(xtile * 2, ytile * 2 + 1, ztile + 1),
         ]
+
     return tiles
 
 
@@ -532,15 +703,18 @@ def simplify(tiles):
         return current_tileset, changed
 
     # Check to see if a tile and its parent both already exist.
+    # Ensure that tiles are sorted by zoom so parents are encountered first.
     # If so, discard the child (it's covered in the parent)
     root_set = set()
-    for tile in tiles:
+    for tile in sorted(tiles, key=operator.itemgetter(2)):
         x, y, z = tile
-        supers = [parent(tile, zoom=i) for i in range(z + 1)]
-        for supertile in supers:
+        is_new_tile = True
+        for supertile in (parent(tile, zoom=i) for i in range(z)):
             if supertile in root_set:
+                is_new_tile = False
                 continue
-        root_set |= {tile}
+        if is_new_tile:
+            root_set |= {tile}
 
     # Repeatedly run merge until no further simplification is possible.
     is_merging = True
@@ -571,25 +745,33 @@ def bounding_tile(*bbox, **kwds):
     """
     if len(bbox) == 2:
         bbox += bbox
+
     w, s, e, n = bbox
-    truncate = bool(kwds.get('truncate'))
+
+    truncate = bool(kwds.get("truncate"))
+
     if truncate:
         w, s = truncate_lnglat(w, s)
         e, n = truncate_lnglat(e, n)
-    # Algorithm ported directly from https://github.com/mapbox/tilebelt.
+
+    e = e - LL_EPSILON
+    s = s + LL_EPSILON
 
     try:
-        tmin = tile(w, s, 32, truncate=truncate)
-        tmax = tile(e, n, 32, truncate=truncate)
+        tmin = tile(w, n, 32)
+        tmax = tile(e, s, 32)
     except InvalidLatitudeError:
         return Tile(0, 0, 0)
 
     cell = tmin[:2] + tmax[:2]
     z = _getBboxZoom(*cell)
+
     if z == 0:
         return Tile(0, 0, 0)
+
     x = rshift(cell[0], (32 - z))
     y = rshift(cell[1], (32 - z))
+
     return Tile(x, y, z)
 
 
@@ -597,15 +779,14 @@ def _getBboxZoom(*bbox):
     MAX_ZOOM = 28
     for z in range(0, MAX_ZOOM):
         mask = 1 << (32 - (z + 1))
-        if ((bbox[0] & mask) != (bbox[2] & mask) or
-                (bbox[1] & mask) != (bbox[3] & mask)):
+        if (bbox[0] & mask) != (bbox[2] & mask) or (bbox[1] & mask) != (bbox[3] & mask):
             return z
     return MAX_ZOOM
 
 
 def feature(
-        tile, fid=None, props=None, projected='geographic', buffer=None,
-        precision=None):
+    tile, fid=None, props=None, projected="geographic", buffer=None, precision=None
+):
     """Get the GeoJSON feature corresponding to a tile
 
     Parameters
@@ -631,37 +812,136 @@ def feature(
 
     """
     west, south, east, north = bounds(tile)
-    if projected == 'mercator':
+
+    if projected == "mercator":
         west, south = xy(west, south, truncate=False)
         east, north = xy(east, north, truncate=False)
+
     if buffer:
         west -= buffer
         south -= buffer
         east += buffer
         north += buffer
+
     if precision and precision >= 0:
         west, south, east, north = (
-            round(v, precision) for v in (west, south, east, north))
-    bbox = [
-        min(west, east), min(south, north),
-        max(west, east), max(south, north)]
+            round(v, precision) for v in (west, south, east, north)
+        )
+
+    bbox = [min(west, east), min(south, north), max(west, east), max(south, north)]
     geom = {
-        'type': 'Polygon',
-        'coordinates': [[
-            [west, south],
-            [west, north],
-            [east, north],
-            [east, south],
-            [west, south]]]}
+        "type": "Polygon",
+        "coordinates": [
+            [[west, south], [west, north], [east, north], [east, south], [west, south]]
+        ],
+    }
+
     xyz = str(tile)
     feat = {
-        'type': 'Feature',
-        'bbox': bbox,
-        'id': xyz,
-        'geometry': geom,
-        'properties': {'title': 'XYZ tile %s' % xyz}}
+        "type": "Feature",
+        "bbox": bbox,
+        "id": xyz,
+        "geometry": geom,
+        "properties": {"title": "XYZ tile %s" % xyz},
+    }
+
     if props:
-        feat['properties'].update(props)
-    if fid:
-        feat['id'] = fid
+        feat["properties"].update(props)
+
+    if fid is not None:
+        feat["id"] = fid
+
     return feat
+
+
+def _coords(obj):
+    """All coordinate tuples from a geometry or feature or collection
+
+    Yields
+    ------
+    lng : float
+        Longitude
+    lat : float
+        Latitude
+
+    """
+    if isinstance(obj, (tuple, list)):
+        coordinates = obj
+    elif "features" in obj:
+        coordinates = [feat["geometry"]["coordinates"] for feat in obj["features"]]
+    elif "geometry" in obj:
+        coordinates = obj["geometry"]["coordinates"]
+    else:
+        coordinates = obj.get("coordinates", obj)
+
+    for e in coordinates:
+        if isinstance(e, (float, int)):
+            yield tuple(coordinates)
+            break
+        else:
+            for f in _coords(e):
+                yield f[:2]
+
+
+def geojson_bounds(obj):
+    """Returns the bounding box of a GeoJSON object
+
+    Parameters
+    ----------
+    obj : mapping
+        A GeoJSON geometry, feature, or feature collection.
+
+    Returns
+    -------
+    LngLatBbox
+
+    """
+
+    def func(bbox, coords):
+        w, s, e, n = bbox
+        lng, lat = coords
+        return min(w, lng), min(s, lat), max(e, lng), max(n, lat)
+
+    w, s, e, n = reduce(func, _coords(obj), (180.0, 90.0, -180.0, -90.0))
+    return LngLatBbox(w, s, e, n)
+
+
+@lru_cache(maxsize=28)
+def minmax(zoom):
+    """Minimum and maximum tile coordinates for a zoom level
+
+    Parameters
+    ----------
+    zoom : int
+        The web mercator zoom level.
+
+    Returns
+    -------
+    minimum : int
+        Minimum tile coordinate (note: always 0).
+    maximum : int
+        Maximum tile coordinate (2 ** zoom - 1).
+
+    Raises
+    ------
+    InvalidZoomError
+        If zoom level is not a positive integer.
+
+    Examples
+    --------
+    >>> minmax(1)
+    (0, 1)
+    >>> minmax(-1)
+    Traceback (most recent call last):
+    ...
+    InvalidZoomError: zoom must be a positive integer
+
+    """
+
+    try:
+        if int(zoom) != zoom or zoom < 0:
+            raise InvalidZoomError("zoom must be a positive integer")
+    except ValueError:
+        raise InvalidZoomError("zoom must be a positive integer")
+
+    return (0, 2 ** zoom - 1)

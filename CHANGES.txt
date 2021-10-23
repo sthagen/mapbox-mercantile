@@ -1,6 +1,90 @@
 Changes
 =======
 
+1.2.1 (2021-04-21)
+------------------
+
+- A missing comma in the ``__all__`` list caused the neighbors and parent
+  method to drop out of the module documentation (#135).
+
+1.2.0 (2021-04-19)
+------------------
+
+- Copyright holder and date (Mapbox, 2021) have been updated.
+- CLI help and documentation has been updated.
+
+1.2b1 (2021-04-14)
+------------------
+
+There have been no changes since 1.2a1.
+
+1.2a1 (2021-04-12)
+------------------
+
+Project infrastructure changes:
+
+- Default GitHub branch is now "main".
+
+Deprecations and future warnings:
+
+- The Tile constructor in mercantile 2.0 will refuse to make tiles with X and Y
+  indexes outside of the range 0 <= value <= 2 ** zoom. It will also require
+  indexes to be integers.
+
+New features:
+
+- Moved the ``coords()`` function in mercantile/script/__init__.py to
+  ``_coords()`` in mercantile/__init__.py to support ``geojson_bounds`` (#119).
+- Add ``geojson_bounds`` to get the bounding box of a GeoJSON geometry,
+  feature, or collection (#119).
+- Add ``minmax`` to get minimum and maximum x and y tile coordinates.
+- Add ``neighbors`` function and command to get adjacent tiles (#118).
+
+1.1.6 (2020-08-24)
+------------------
+
+- In some cases tile() could return a Tile with float x or y attributes (#115).
+  This is a new bug in 1.1.5 and breaks some user code on Python 2.7 and is now
+  fixed.
+
+1.1.5 (2020-06-16)
+------------------
+
+- A bug in ``simplify()`` has been fixed and the algorithm has been improved
+  (#111).
+- Implementation of ``tile()`` has been simplified and corrected (#114).
+
+1.1.4 (2020-04-28)
+------------------
+
+- Change a list comprehension to a generator expression in simplify().
+- Change DeprecationWarning introduced in 1.1.3 to a UserWarning to increase
+  visibility.
+- Ensure symmetric InvalidLatitudeErrors at both poles (#106).
+
+1.1.3 (2020-04-13)
+------------------
+
+- Warn about deprecation of support when mercantile is imported with Python
+  versions < 3. Mercantile 2.0 will not be compatible with Python 2.7.
+- The bounding tile of the bounds of a tile is now that same tile (#100).
+
+1.1.2 (2019-08-05)
+------------------
+
+- fid of 0 is now allowed by the ``feature()`` function (#85).
+- Passing the bounds of a tile to ``tiles()`` now yields exactly that tile
+  only (given the correct zoom), resolving #84 and #87.
+- QuadKeyError derives from ValueError again, resolving issue #98, but only
+  until version 2.0. A deprecation warning explaining this is raised from
+  quadkey_to_tile just before QuadKeyError is raised.
+- Format source using black.
+
+1.1.1 (2019-07-01)
+------------------
+
+- Update tests to work with pytest 5.
+
 1.1.0 (2019-06-21)
 ------------------
 
@@ -161,4 +245,3 @@ Thanks to all contributors (see AUTHORS.txt), users, and testers, Mercantile
 0.1 (2014-03-26)
 ----------------
 - Added mercantile.tool script for use with geojsonio-cli.
-

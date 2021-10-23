@@ -2,8 +2,8 @@
 Mercantile
 ==========
 
-.. image:: https://travis-ci.org/mapbox/mercantile.svg
-   :target: https://travis-ci.org/mapbox/mercantile
+.. image:: https://app.travis-ci.com/mapbox/mercantile.svg?branch=main
+   :target: https://app.travis-ci.com/mapbox/mercantile
    :alt: Build Status
 
 .. image:: https://coveralls.io/repos/github/mapbox/mercantile/badge.svg?branch=master
@@ -65,28 +65,27 @@ that intersect with a GeoJSON bounding box.
 
 .. code-block:: console
 
-    $ mercantile --help
-    Usage: mercantile [OPTIONS] COMMAND [ARGS]...
+	$ mercantile --help
+	Usage: mercantile [OPTIONS] COMMAND [ARGS]...
 
-      Command line interface for the Mercantile Python package.
+	  Command line interface for the Mercantile Python package.
 
-    Options:
-      -v, --verbose  Increase verbosity.
-      -q, --quiet    Decrease verbosity.
-      --help         Show this message and exit.
+	Options:
+	  -v, --verbose  Increase verbosity.
+	  -q, --quiet    Decrease verbosity.
+	  --version      Show the version and exit.
+	  --help         Show this message and exit.
 
-    Commands:
-      bounding-tile  Print the bounding tile of a lng/lat point, bounding box, or
-                     GeoJSON objects.
-      children       Print the children of the tile.
-      parent         print the parent tile.
-      quadkey        Convert to/from quadkeys.
-      shapes         Print the shapes of tiles as GeoJSON.
-      tiles          Print tiles that overlap or contain a lng/lat point, bounding
-                     box, or GeoJSON objects.
-
-See `docs/cli.rst <docs/cli.rst>`__ for more about the mercantile program.
-
+	Commands:
+	  bounding-tile  Print the bounding tile of a lng/lat point, bounding box, or
+					 GeoJSON objects.
+	  children       Print the children of the tile.
+	  neighbors      Print the neighbors of the tile.
+	  parent         Print the parent tile.
+	  quadkey        Convert to/from quadkeys.
+	  shapes         Print the shapes of tiles as GeoJSON.
+	  tiles          Print tiles that overlap or contain a lng/lat point, bounding
+					 box, or GeoJSON objects.
 
 See Also
 ========
@@ -100,3 +99,6 @@ provides many of the same features for Node.
 
 `tilebelt <https://github.com/mapbox/tilebelt>`__ has some of the GeoJSON
 features as mercantile and a few more (tile parents, quadkey).
+
+`morecantile <https://github.com/developmentseed/morecantile>`__ is like mercantile,
+but with support for other TileMatrixSet grids.

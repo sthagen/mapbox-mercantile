@@ -1,3 +1,7 @@
+import warnings
+
+from hypothesis import example, given
+from hypothesis.strategies import composite, integers
 import pytest
 
 import mercantile
@@ -75,7 +79,7 @@ def test_lnglat_xy_roundtrip():
     lnglat = (-105.0844, 40.5853)
     roundtrip = mercantile.lnglat(*mercantile.xy(*lnglat))
     for a, b in zip(roundtrip, lnglat):
-        assert round(a - b, 4) == 0
+        assert round(a - b, 7) == 0
 
 
 @pytest.mark.parametrize(
@@ -94,7 +98,7 @@ def test_xy_bounds(args):
         assert round(a - b, 7) == 0
 
 
-def test_tile():
+def test_tile_not_truncated():
     tile = mercantile.tile(20.6852, 40.1222, 9)
     expected = (285, 193)
     assert tile[0] == expected[0]
@@ -149,6 +153,31 @@ def test_global_tiles_clamped():
     assert max(t.y for t in tiles) == 1
 
 
+@pytest.mark.parametrize(
+    "t",
+    [
+        mercantile.Tile(x=3413, y=6202, z=14),
+        mercantile.Tile(486, 332, 10),
+        mercantile.Tile(10, 10, 10),
+    ],
+)
+def test_tiles_roundtrip(t):
+    """tiles(bounds(tile)) gives the tile"""
+    res = list(mercantile.tiles(*mercantile.bounds(t), zooms=[t.z]))
+    assert len(res) == 1
+    val = res.pop()
+    assert val.x == t.x
+    assert val.y == t.y
+    assert val.z == t.z
+
+
+def test_tiles_roundtrip_children():
+    """tiles(bounds(tile)) gives the tile's children"""
+    t = mercantile.Tile(x=3413, y=6202, z=14)
+    res = list(mercantile.tiles(*mercantile.bounds(t), zooms=[15]))
+    assert len(res) == 4
+
+
 def test_quadkey():
     tile = mercantile.Tile(486, 332, 10)
     expected = "0313102310"
@@ -167,12 +196,20 @@ def test_empty_quadkey_to_tile():
     assert mercantile.quadkey_to_tile(qk) == expected
 
 
-def test_quadkey_failure():
+def test_quadkey_failure(recwarn):
+    """expect a deprecation warning"""
+    warnings.simplefilter("always")
     with pytest.raises(mercantile.QuadKeyError):
         mercantile.quadkey_to_tile("lolwut")
+    assert len(recwarn) == 1
+    assert recwarn.pop(DeprecationWarning)
 
 
-@pytest.mark.parametrize('args', [(486, 332, 10, 9), ((486, 332, 10), 9)])
+def test_root_parent():
+    assert mercantile.parent(0, 0, 0) is None
+
+
+@pytest.mark.parametrize("args", [(486, 332, 10, 9), ((486, 332, 10), 9)])
 def test_parent_invalid_args(args):
     """tile arg must have length 1 or 3"""
     with pytest.raises(mercantile.TileArgParsingError):
@@ -248,31 +285,55 @@ def test_children_multi():
 def test_child_fractional_zoom():
     with pytest.raises(mercantile.InvalidZoomError) as e:
         mercantile.children((243, 166, 9), zoom=10.2)
-    assert "zoom must be an integer and greater than" in str(e)
+    assert "zoom must be an integer and greater than" in str(e.value)
 
 
 def test_child_bad_tile_zoom():
     with pytest.raises(mercantile.InvalidZoomError) as e:
         mercantile.children((243, 166, 9), zoom=8)
-    assert "zoom must be an integer and greater than" in str(e)
+    assert "zoom must be an integer and greater than" in str(e.value)
 
 
 def test_parent_fractional_tile():
     with pytest.raises(mercantile.ParentTileError) as e:
         mercantile.parent((243.3, 166.2, 9), zoom=1)
-    assert "the parent of a non-integer tile is undefined" in str(e)
+    assert "the parent of a non-integer tile is undefined" in str(e.value)
 
 
 def test_parent_fractional_zoom():
     with pytest.raises(mercantile.InvalidZoomError) as e:
         mercantile.parent((243, 166, 9), zoom=1.2)
-    assert "zoom must be an integer and less than" in str(e)
+    assert "zoom must be an integer and less than" in str(e.value)
 
 
 def test_parent_bad_tile_zoom():
     with pytest.raises(mercantile.InvalidZoomError) as e:
         mercantile.parent((243.3, 166.2, 9), zoom=10)
-    assert "zoom must be an integer and less than" in str(e)
+    assert "zoom must be an integer and less than" in str(e.value)
+
+
+def test_neighbors():
+    x, y, z = 243, 166, 9
+    tiles = mercantile.neighbors(x, y, z)
+    assert len(tiles) == 8
+    assert all(t.z == z for t in tiles)
+    assert all(t.x - x in (-1, 0, 1) for t in tiles)
+    assert all(t.y - y in (-1, 0, 1) for t in tiles)
+
+
+def test_neighbors_invalid():
+    x, y, z = 0, 166, 9
+    tiles = mercantile.neighbors(x, y, z)
+    assert len(tiles) == 8 - 3  # no top-left, left, bottom-left
+    assert all(t.z == z for t in tiles)
+    assert all(t.x - x in (-1, 0, 1) for t in tiles)
+    assert all(t.y - y in (-1, 0, 1) for t in tiles)
+
+
+def test_root_neighbors_invalid():
+    x, y, z = 0, 0, 0
+    tiles = mercantile.neighbors(x, y, z)
+    assert len(tiles) == 0  # root tile has no neighbors
 
 
 def test_simplify():
@@ -294,10 +355,32 @@ def test_simplify():
         assert target in simplified
 
 
-def test_bounding_tile():
-    assert mercantile.bounding_tile(-92.5, 0.5, -90.5, 1.5) == (31, 63, 7)
-    assert mercantile.bounding_tile(-90.5, 0.5, -89.5, 0.5) == (0, 0, 1)
-    assert mercantile.bounding_tile(-92, 0, -88, 2) == (0, 0, 0)
+def test_simplify_removal():
+    ''' Verify that tiles are being removed by simplify()
+    '''
+    tiles = [
+        (1298, 3129, 13),
+        (649, 1564, 12),
+        (650, 1564, 12),
+        ]
+    simplified = mercantile.simplify(tiles)
+    assert (1298, 3129, 13) not in simplified, 'Tile covered by a parent'
+    assert (650, 1564, 12) in simplified, 'Highest-level tile'
+    assert (649, 1564, 12) in simplified, 'Also highest-level tile'
+
+
+@pytest.mark.parametrize(
+    "bounds,tile",
+    [
+        ((-92.5, 0.5, -90.5, 1.5), (31, 63, 7)),
+        ((-90.5, 0.5, -89.5, 0.5), (0, 0, 1)),
+        ((-92, 0, -88, 2), (0, 0, 1)),
+        ((-92, -2, -88, 2), (0, 0, 0)),
+        ((-92, -2, -88, 0), (0, 1, 1)),
+    ],
+)
+def test_bounding_tile(bounds, tile):
+    assert mercantile.bounding_tile(*bounds) == mercantile.Tile(*tile)
 
 
 def test_overflow_bounding_tile():
@@ -335,11 +418,12 @@ def test_truncate_lat_over():
 
 
 @pytest.mark.parametrize(
-    "args, tile", [
+    "args, tile",
+    [
         ((0, 0, 0), (0, 0, 0)),
         (mercantile.Tile(0, 0, 0), (0, 0, 0)),
         (((0, 0, 0)), (0, 0, 0)),
-    ]
+    ],
 )
 def test_arg_parse(args, tile):
     """Helper function parse tile args properly"""
@@ -351,3 +435,146 @@ def test_arg_parse_error(args):
     """Helper function raises exception as expected"""
     with pytest.raises(mercantile.TileArgParsingError):
         mercantile._parse_tile_arg(*args)
+
+
+@composite
+def tiles(draw, zooms=integers(min_value=0, max_value=28)):
+    z = draw(zooms)
+    x = draw(integers(min_value=0, max_value=2 ** z - 1))
+    y = draw(integers(min_value=0, max_value=2 ** z - 1))
+    return mercantile.Tile(x, y, z)
+
+
+@given(tiles())
+@example(mercantile.Tile(10, 10, 10))
+def test_bounding_tile_roundtrip(t):
+    """bounding_tile(bounds(tile)) gives the tile"""
+    val = mercantile.bounding_tile(*mercantile.bounds(t))
+    assert val.x == t.x
+    assert val.y == t.y
+    assert val.z == t.z
+
+
+@given(tiles())
+@example(mercantile.Tile(10, 10, 10))
+def test_ul_tile_roundtrip(t):
+    """ul and tile roundtrip"""
+    lnglat = mercantile.ul(t)
+    tile = mercantile.tile(lnglat.lng, lnglat.lat, t.z)
+    assert tile.z == t.z
+    assert tile.x == t.x
+    assert tile.y == t.y
+
+
+@given(tiles())
+@example(mercantile.Tile(10, 10, 10))
+def test_ul_xy_bounds(t):
+    """xy(*ul(t)) will be within 1e-7 of xy_bounds(t)"""
+    assert mercantile.xy(*mercantile.ul(t))[1] == pytest.approx(
+        mercantile.xy_bounds(t).top, abs=1e-7
+    )
+    assert mercantile.xy(*mercantile.ul(t))[0] == pytest.approx(
+        mercantile.xy_bounds(t).left, abs=1e-7
+    )
+
+
+def test_lower_left_tile():
+    assert mercantile.tile(180.0, -85, 1) == mercantile.Tile(1, 1, 1)
+
+
+@pytest.mark.parametrize("lat", [-90.0, 90.0])
+def test_tile_poles(lat):
+    with pytest.raises(mercantile.InvalidLatitudeError):
+        mercantile.tile(0.0, lat, zoom=17)
+
+
+@pytest.mark.parametrize("lat", [-90.0, 90.0])
+def test__xy_poles(lat):
+    with pytest.raises(mercantile.InvalidLatitudeError):
+        mercantile._xy(0.0, lat)
+
+
+@pytest.mark.parametrize("lat,fy", [(85.0511287798066, 0.0), (-85.0511287798066, 1.0)])
+def test__xy_limits(lat, fy):
+    x, y = mercantile._xy(0.0, lat)
+    assert x == 0.5
+    assert y == pytest.approx(fy)
+
+
+@pytest.mark.parametrize("lat", [86.0])
+def test__xy_north_of_limit(lat):
+    x, y = mercantile._xy(0.0, lat)
+    assert x == 0.5
+    assert y < 0
+
+
+@pytest.mark.parametrize("lat", [-86.0])
+def test__xy_south_of_limit(lat):
+    x, y = mercantile._xy(0.0, lat)
+    assert x == 0.5
+    assert y > 1
+
+
+def test_minmax():
+    """Exercise minmax from zoom levels 0 to 28"""
+    assert mercantile.minmax(zoom=0) == (0, 0)
+    assert mercantile.minmax(zoom=1) == (0, 1)
+
+    for z in range(0, 28):
+        minimum, maximum = mercantile.minmax(z)
+
+        assert minimum == 0
+        assert maximum >= 0
+        assert maximum == 2 ** z - 1
+
+
+@pytest.mark.parametrize("z", [1.2, "lol", -1])
+def test_minmax_error(z):
+    """Get an exception when zoom is invalid"""
+    with pytest.raises(mercantile.InvalidZoomError):
+        mercantile.minmax(z)
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        {"features": [{"geometry": {"coordinates": (1, 2)}}]},
+        {"geometry": {"coordinates": (1, 2)}},
+        {"coordinates": (1, 2)},
+        {"coordinates": [(1, 2)]},
+        (1, 2),
+        [(1, 2)],
+    ],
+)
+def test_coords(obj):
+    """Get coordinates of mock geojson objects"""
+    assert list(mercantile._coords(obj)) == [(1, 2)]
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        {
+            "features": [
+                {"geometry": {"coordinates": (1, 2)}},
+                {"geometry": {"coordinates": (-1, -2)}},
+            ]
+        },
+        {"geometry": {"coordinates": [(1, 2), (-1, -2)]}},
+        {"coordinates": [(1, 2), (-1, -2)]},
+        [(1, 2), (-1, -2)],
+    ],
+)
+def test_geojson_bounds(obj):
+    """Get bounds of mock geojson objects"""
+    bbox = mercantile.geojson_bounds(obj)
+    assert bbox.west == -1.0
+    assert bbox.south == -2.0
+    assert bbox.east == 1.0
+    assert bbox.north == 2.0
+
+
+@pytest.mark.parametrize("x,y", [(0, 1), (1, 0), (-1, 0), (0, -1)])
+def test_xy_future_warnings(x, y):
+    with pytest.warns(FutureWarning):
+        mercantile.Tile(x, y, 0)
